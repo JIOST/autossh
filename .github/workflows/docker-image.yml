@@ -1,5 +1,5 @@
 name: Build Docker Image
-# v1.0.4
+# v1.0.5
 
 on:
   push:
@@ -31,6 +31,7 @@ jobs:
     if: needs.validate_tag.outputs.is_valid == 'true'
     name: Push Docker image to Docker Hub
     runs-on: ubuntu-latest
+    environment: builder
     permissions:
       packages: write
       contents: read
@@ -80,6 +81,70 @@ jobs:
           cache-to: type=gha,mode=max
           build-args: |
             "APPLICATION=${{ vars.DOCKER_APPLICATION || github.event.repository.name }}"
+            "BUILD_RFC3339=${{ env.RELEASE_DATE }}"
+            DESCRIPTION="${{ github.event.repository.description }}"
+            "PACKAGE=${{ github.repository }}"
+            "REVISION=${{ github.sha }}"
+            "VERSION=${{ github.ref_name }}"
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+  push_to_ghcr:
+    needs: validate_tag
+    if: needs.validate_tag.outputs.is_valid == 'true'
+    name: Push Docker image to GHCR
+    runs-on: ubuntu-latest
+    environment: builder
+    permissions:
+      packages: write
+      contents: read
+      attestations: write
+      id-token: write
+    steps:
+      - name: Set release date
+        run: |
+          echo "RELEASE_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")" >> ${GITHUB_ENV}
+
+      - name: Check out the repo
+        uses: actions/checkout@v6
+
+      # Логинимся в GHCR
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata (tags, labels) for Docker
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          flavor: |
+            latest=false
+          images: ghcr.io/${{ github.repository_owner }}/${{ github.event.repository.name }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build and push Docker image
+        id: push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./build/package/Dockerfile
+          push: true
+          platforms: linux/amd64,linux/arm64,linux/arm/v7,linux/arm/v6
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            "APPLICATION=${{ github.event.repository.name }}"
             "BUILD_RFC3339=${{ env.RELEASE_DATE }}"
             DESCRIPTION="${{ github.event.repository.description }}"
             "PACKAGE=${{ github.repository }}"
